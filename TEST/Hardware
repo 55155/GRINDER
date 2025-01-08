@@ -1,0 +1,27 @@
+모터 드라이버 Control input (Digital)
+
+    Speed in <PWM>: 10 (PWM 출력 핀)
+    Enable: 11 (디지털 출력)
+    Direction: 12 (디지털 출력)
+    Brake: 13 (디지털 출력)
+    GND: 아두이노 GND
+
+
+모터 드라이버 Control output (Analog)
+
+    Hall A: A5
+    Hall B: A4
+    Hall C: A3
+    Alarm out: A2
+    FG out: A1
+    3.3V out: A0
+    모터 드라이버 
+
+
+Communication
+
+    Tx: 아두이노 Tx(0)
+
+    Rx: 아두이노 Rx(1)
+
+    GND: 디지털 2 (?)
