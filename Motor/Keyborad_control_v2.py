@@ -8,16 +8,15 @@ from matplotlib.animation import FuncAnimation
 
 # Matplotlib 백엔드 설정
 matplotlib.use('TkAgg')
-
 class MotorController:
-    def __init__(self, port="/dev/ttyUSB0", baudrate=115200, device_id=100):
+    def __init__(self, port="/dev/ttyUSB0", baudrate=115200, device_id=100, timeout = 0.1):
         self.client = ModbusSerialClient(
             port=port,
             baudrate=baudrate,
             bytesize=8,
             parity="N",
             stopbits=1,
-            timeout=0.1,
+            timeout=timeout,
         )
         self.device_id = device_id
         self.lock = threading.Lock()
@@ -54,7 +53,7 @@ class MotorController:
             return False
 
     def set_speed(self, speed):
-        if 0 <= speed <= 100:
+        if 0 <= speed <= 300:
             return self.write_register(0x0001, speed)
         return False
 
@@ -77,22 +76,26 @@ class MotorController:
         return self.read_register(0x0015)
 
 
-def user_input_handler(motor, run_event, input_queue):
+def user_input_handler(motor, run_event, input_queue): 
+    # queue 로 신호를 맞출수 있구나.. 이생각을 못했네.. 
     while run_event.is_set():
         try:
             user_input = input()
-            if user_input.isdigit():
+            if user_input.isdigit(): # 여기서 except 발생
                 user_speed = int(user_input)
-                if 0 <= user_speed <= 100:
+                if 0 <= user_speed <= 150:
                     input_queue.put(user_speed)
             else:
                 run_event.clear() # 
                 break
         except:
-            run_event.clear()
+            run_event.clear() # clear 시에 스레드 종료
             break
 
-def motor_control(motor, run_event, direction_lock, current_direction, input_queue):
+from collections import deque
+
+def motor_control(motor, run_event, direction_lock, current_direction, input_queue, timeout = 0.1):
+    rpm_buffer = deque(maxlen=5)  # 최근 5개의 RPM 값을 저장
     while run_event.is_set():
         if not input_queue.empty():
             new_speed = input_queue.get()
@@ -101,104 +104,125 @@ def motor_control(motor, run_event, direction_lock, current_direction, input_que
         current_rpm = motor.get_current_RPM()
         if current_rpm:
             rpm_value = current_rpm[0]
-            if rpm_value == 0:
+            rpm_buffer.append(rpm_value)  # 최근 RPM 값을 버퍼에 추가
+
+            if sum(rpm_buffer) == 0:  # 최근 값의 평균이 0일 경우
                 motor.set_enable(0)
                 with direction_lock:
                     current_direction[0] = 1 - current_direction[0]
                     motor.set_cw_ccw(current_direction[0])
                 motor.set_enable(1)
-        time.sleep(0.1)
+                rpm_buffer.clear()  # 방향 전환 후 버퍼 초기화
+                time.sleep(0.5)  # 안정화 시간 추가
+        time.sleep(timeout) # 모터 컨트롤 신호 주기 
 
-
-def plot_rpm(motor, run_event, run_time=20):
+def plot_rpm_and_direction(motor, run_event, run_time=20):
     x_data = []
-    y_data = []
+    rpm_data = []
+    direction_data = []
     start_time = time.time()
 
-    fig, ax = plt.subplots()
-    line, = ax.plot([], [], 'b-')
-    ax.set_xlim(0, run_time)
-    ax.set_ylim(-10, 3000)
-    ax.set_xlabel("Time (sec)")
-    ax.set_ylabel("RPM")
-    ax.set_title("Real-time Motor RPM")
+    # 두 개의 서브플롯 생성
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+    line_rpm, = ax1.plot([], [], 'b-', label="RPM")
+    line_direction, = ax2.plot([], [], 'r-', label="Direction")
+
+    # 서브플롯 1: RPM
+    ax1.set_xlim(0, run_time)
+    ax1.set_ylim(-10, 3000)
+    ax1.set_xlabel("Time (sec)")
+    ax1.set_ylabel("RPM")
+    ax1.set_title("Real-time Motor RPM")
+    ax1.legend(loc="upper right")
+
+    # 서브플롯 2: Direction
+    ax2.set_xlim(0, run_time)
+    ax2.set_ylim(-0.5, 1.5)  # 0과 1 사이
+    ax2.set_yticks([0, 1])   # y축에 0과 1 라벨
+    ax2.set_xlabel("Time (sec)")
+    ax2.set_ylabel("Direction")
+    ax2.set_title("Real-time Motor Direction")
+    ax2.legend(loc="upper right")
 
     def update(frame):
         if not run_event.is_set():
             plt.close()
-            return line,
+            return line_rpm, line_direction
+
         current_time = time.time() - start_time
         if current_time > run_time:
-            ax.set_xlim(current_time - run_time, current_time)
+            ax1.set_xlim(current_time - run_time, current_time)
+            ax2.set_xlim(current_time - run_time, current_time)
         else:
-            ax.set_xlim(0, run_time)
+            ax1.set_xlim(0, run_time)
+            ax2.set_xlim(0, run_time)
 
-        current_register = motor.get_current_RPM()
-        if current_register:
-            rpm_value = current_register[0]
+        # RPM 데이터 업데이트
+        current_register_rpm = motor.get_current_RPM()
+        if current_register_rpm:
+            rpm_value = current_register_rpm[0]
             x_data.append(current_time)
-            y_data.append(rpm_value)
-            line.set_data(x_data, y_data)
-        return line,
+            rpm_data.append(rpm_value)
+            line_rpm.set_data(x_data, rpm_data)
+
+        # Direction 데이터 업데이트
+        current_register_direction = motor.read_register(0x0002)  # 0x0002는 방향 레지스터
+        if current_register_direction:
+            direction_value = current_register_direction[0]
+            direction_data.append(direction_value)
+            line_direction.set_data(x_data, direction_data)
+
+        return line_rpm, line_direction
 
     ani = FuncAnimation(fig, update, interval=1000, blit=False, save_count=100)
     try:
+        plt.tight_layout()
         plt.show()
     except:
         pass
+
     run_event.clear()
 
-
 if __name__ == "__main__":
-    motor = MotorController()
+
+    global_timeout = [0.03, 0.05, 0.1, 0.2, 0.5, 1.0]
+    motor = MotorController(timeout=global_timeout[0])
     if not motor.connect():
         print("[오류] Modbus 연결 실패")
         exit()
     else:
         print("모터 연결 성공")
 
-    # 모터 초기 설정
-    if not motor.set_speed(70):
+    if not motor.set_speed(100):
         print("[오류] 속도 설정 실패")
-    else:
-        print("속도 설정 성공")
-
     if not motor.set_brake(0):
         print("[오류] 브레이크 해제 실패")
-    else:
-        print("브레이크 해제 성공")
 
-    # 스레드 제어 이벤트 및 변수 초기화
-    run_event = threading.Event()   # flag 역할
-    run_event.set()                 # set() 상태면 진행, clear() 상태면 대기               
+    run_event = threading.Event()
+    run_event.set()
     direction_lock = threading.Lock()
     current_direction = [0]
     input_queue = Queue()
 
-    # 스레드 생성
     motor_thread = threading.Thread(
-        target=motor_control, args=(motor, run_event, direction_lock, current_direction, input_queue)
+        target=motor_control, args=(motor, run_event, direction_lock, current_direction, input_queue, global_timeout[0])
     )
     input_thread = threading.Thread(
         target=user_input_handler, args=(motor, run_event, input_queue)
     )
 
-    # 스레드 시작
     motor_thread.start()
     input_thread.start()
 
     try:
-        # 메인 스레드에서 플로팅 실행
-        plot_rpm(motor, run_event, run_time=5)
+        # 두 개의 플롯 표시 함수 호출
+        plot_rpm_and_direction(motor, run_event, run_time=10)
     except Exception as e:
         print(f"[오류] 플로팅 실행 중 오류 발생: {e}")
         run_event.clear()
 
-    # 스레드 종료 대기
-    run_event.clear()  # 종료 신호 설정
     motor_thread.join()
     input_thread.join()
     motor.close()
 
     print("프로세스 종료")
-

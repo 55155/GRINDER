@@ -10,7 +10,7 @@ from matplotlib.animation import FuncAnimation
 matplotlib.use('TkAgg')
 
 class MotorController:
-    def __init__(self, port="/dev/ttyUSB0", baudrate=115200, device_id=100):
+    def __init__(self, port="/dev/ttyUSB1", baudrate=115200, device_id=100):
         self.client = ModbusSerialClient(
             port=port,
             baudrate=baudrate,
@@ -86,12 +86,12 @@ def user_input_handler(motor, run_event, input_queue):
                 if 0 <= user_speed <= 100:
                     input_queue.put(user_speed)
             else:
-                run_event.clear() # 
+                run_event.clear()
                 break
         except:
             run_event.clear()
             break
-
+        
 def motor_control(motor, run_event, direction_lock, current_direction, input_queue):
     while run_event.is_set():
         if not input_queue.empty():
@@ -107,7 +107,7 @@ def motor_control(motor, run_event, direction_lock, current_direction, input_que
                     current_direction[0] = 1 - current_direction[0]
                     motor.set_cw_ccw(current_direction[0])
                 motor.set_enable(1)
-        time.sleep(0.1)
+        time.sleep(0.5)
 
 
 def plot_rpm(motor, run_event, run_time=20):
@@ -118,7 +118,7 @@ def plot_rpm(motor, run_event, run_time=20):
     fig, ax = plt.subplots()
     line, = ax.plot([], [], 'b-')
     ax.set_xlim(0, run_time)
-    ax.set_ylim(-10, 3000)
+    ax.set_ylim(-10, 2000)
     ax.set_xlabel("Time (sec)")
     ax.set_ylabel("RPM")
     ax.set_title("Real-time Motor RPM")
@@ -151,54 +151,42 @@ def plot_rpm(motor, run_event, run_time=20):
 
 if __name__ == "__main__":
     motor = MotorController()
+
     if not motor.connect():
         print("[오류] Modbus 연결 실패")
         exit()
     else:
-        print("모터 연결 성공")
-
-    # 모터 초기 설정
-    if not motor.set_speed(70):
+        print("모터 연결")
+    start_time = time.time()
+    if not motor.set_speed(50):
         print("[오류] 속도 설정 실패")
     else:
         print("속도 설정 성공")
 
+    
     if not motor.set_brake(0):
         print("[오류] 브레이크 해제 실패")
-    else:
-        print("브레이크 해제 성공")
+    end_time = time.time()
+    print(end_time - start_time)
 
-    # 스레드 제어 이벤트 및 변수 초기화
-    run_event = threading.Event()   # flag 역할
-    run_event.set()                 # set() 상태면 진행, clear() 상태면 대기               
-    direction_lock = threading.Lock()
-    current_direction = [0]
-    input_queue = Queue()
+    if motor.connect():
+        run_event = threading.Event()
+        run_event.set()
+        direction_lock = threading.Lock()
+        current_direction = [0]
+        input_queue = Queue()
 
-    # 스레드 생성
-    motor_thread = threading.Thread(
-        target=motor_control, args=(motor, run_event, direction_lock, current_direction, input_queue)
-    )
-    input_thread = threading.Thread(
-        target=user_input_handler, args=(motor, run_event, input_queue)
-    )
+        motor_thread = threading.Thread(
+            target=motor_control, args=(motor, run_event, direction_lock, current_direction, input_queue)
+        )
 
-    # 스레드 시작
-    motor_thread.start()
-    input_thread.start()
+        motor_thread.start()
 
-    try:
-        # 메인 스레드에서 플로팅 실행
-        plot_rpm(motor, run_event, run_time=5)
-    except Exception as e:
-        print(f"[오류] 플로팅 실행 중 오류 발생: {e}")
-        run_event.clear()
+        try:
+            plot_rpm(motor, run_event, run_time=20)
+        except:
+            run_event.clear()
 
-    # 스레드 종료 대기
-    run_event.clear()  # 종료 신호 설정
-    motor_thread.join()
-    input_thread.join()
-    motor.close()
+        motor_thread.join()
 
-    print("프로세스 종료")
-
+        motor.close()
